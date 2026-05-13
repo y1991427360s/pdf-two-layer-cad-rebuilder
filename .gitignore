@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+*.dxf
+*.dwg
+*_save.scr
+*_temp.dwg
