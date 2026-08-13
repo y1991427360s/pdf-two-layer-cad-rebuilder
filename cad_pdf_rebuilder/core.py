@@ -117,20 +117,36 @@ def extract_pdf_text(page: fitz.Page) -> list[TextItem]:
     return items
 
 
+_ocr_engine = None
+
+
+def _get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except Exception as exc:
+            raise RuntimeError(
+                "这个 PDF 没有可提取文字层，需要 OCR。请先安装 OCR 依赖：pip install -r requirements.txt"
+            ) from exc
+        _ocr_engine = RapidOCR()
+    return _ocr_engine
+
+
 def extract_ocr_text(page: fitz.Page, options: RebuildOptions, progress: Progress | None = None) -> list[TextItem]:
     try:
         from PIL import Image
         import numpy as np
-        from rapidocr_onnxruntime import RapidOCR
     except Exception as exc:
         raise RuntimeError(
             "这个 PDF 没有可提取文字层，需要 OCR。请先安装 OCR 依赖：pip install -r requirements.txt"
         ) from exc
 
+    engine = _get_ocr_engine()
     zoom = options.render_dpi / 72.0
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
     image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    result, _ = RapidOCR()(np.array(image))
+    result, _ = engine(np.array(image))
     if not result:
         return []
 
@@ -138,7 +154,7 @@ def extract_ocr_text(page: fitz.Page, options: RebuildOptions, progress: Progres
     sy = float(page.rect.height) / pix.height
     items: list[TextItem] = []
     for box, text, score in result:
-        if not text or score < 0.35:
+        if not text or float(score) < 0.35:
             continue
         xs = [float(p[0]) for p in box]
         ys = [float(p[1]) for p in box]
@@ -170,6 +186,13 @@ def build_dxf(pdf_path: Path, output_dir: Path, options: RebuildOptions, progres
     dxf_path = output_dir / f"{pdf_path.stem}.dxf"
 
     source = fitz.open(pdf_path)
+    try:
+        return _build_dxf_from_source(source, pdf_path, dxf_path, options, progress)
+    finally:
+        source.close()
+
+
+def _build_dxf_from_source(source, pdf_path: Path, dxf_path: Path, options: RebuildOptions, progress: Progress | None) -> RebuildResult:
     doc = ezdxf.new("R2018")
     doc.header["$INSUNITS"] = 0
     doc.styles.add(options.text_style, font=options.text_font)
@@ -338,7 +361,8 @@ def rebuild_pdf(pdf_path: Path, output_dir: Path, options: RebuildOptions, progr
             result.dxf.unlink()
         except OSError:
             pass
-    return RebuildResult(result.pdf, result.dxf, dwg, result.vector_entities, result.text_entities)
+    result.dwg = dwg
+    return result
 
 
 def rebuild_many(pdf_paths: Iterable[Path], output_dir: Path, options: RebuildOptions, progress: Progress | None = None) -> list[RebuildResult]:
